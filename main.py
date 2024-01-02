@@ -3,55 +3,27 @@ import subprocess
 import time
 import queue
 import platform
+import json
+import re
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
 
-result_queue = queue.Queue()
-hosts = [
-    "google.com",
-    "youtube.com",
-    "facebook.com",
-    "amazon.com",
-    "yahoo.com",
-    "wikipedia.org",
-    "twitter.com",
-    "instagram.com",
-    "linkedin.com",
-    "netflix.com",
-    "ebay.com",
-    "reddit.com",
-    "pinterest.com",
-    "tumblr.com",
-    "microsoft.com",
-    "apple.com",
-    "cnn.com",
-    "bbc.co.uk",
-    "nytimes.com",
-    "huffpost.com",
-    "foxnews.com",
-    "theguardian.com",
-    "forbes.com",
-    "bloomberg.com",
-    "wsj.com",
-    "weather.com",
-    "espn.com",
-    "nba.com",
-    "nfl.com",
-    "mlb.com",
-    "nhl.com",
-    "imdb.com",
-    "etsy.com",
-    "tripadvisor.com",
-    "booking.com",
-    "airbnb.com",
-    "expedia.com",
-    "kayak.com"
-]
-table_structure = {}
-STATUS_WIDTH = 20
-console = Console(color_system="truecolor")
+try:
+    with open("config.json") as file:
+        CFG = json.load(file)
+except Exception as e:
+    print(e)
 
+table_structure = {}
+result_queue = queue.Queue()
+
+
+hosts = CFG["hosts"]
+STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
+SUCCESS_CHAR = CFG["rich"]["table"]["success_char"]
+FAILED_CHAR = CFG["rich"]["table"]["failed_char"]
+console = Console(color_system=CFG["rich"]["console"]["console_color_system"], style=CFG["rich"]["console"]["console_style"])
 
 def get_operating_system():
     system = platform.system()
@@ -75,20 +47,44 @@ def ping_cmd(host):
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 text=True)
-    result_queue.put({host: [result.returncode, 0, 0]})
+    time_match = re.search(r'time=(\d+\.\d+)', result.stdout)
+    rtt_match = re.search(r"ttl=(\d+) time=(\d+)ms", result.stdout)
+    if time_match:
+        time = time_match.group(1)
+    else:
+        time = 0
+    if rtt_match:
+        rtt = rtt_match.group(1)
+    else:
+        rtt = 0
+    result_queue.put({host: [result.returncode, float(time), float(rtt)]})
 
 
 def queue_to_dict():
     while not result_queue.empty():
         result = result_queue.get()
         for hostname, res in result.items():
-            status =f"[green]{'▅'}[/green]" if res[0] == 0 else f"[red]{'▁'}[/red]"
-            if hostname not in table_structure:
-                table_structure[hostname] = list()
-                table_structure[hostname].append(status)
+            if res[0] == 0:
+                status = f"[green]{SUCCESS_CHAR}[/green]"
+                loss = 0
             else:
-                table_structure[hostname].append(status)
-                table_structure[hostname] = table_structure[hostname][-STATUS_WIDTH:]
+                status = f"[red]{FAILED_CHAR}[/red]"
+                loss = 1
+            if hostname not in table_structure:
+                table_structure[hostname] = {
+                    "status": [status],
+                    "time": res[1],
+                    "rtt": res[2],
+                    "icmp_seq": 1,
+                    "loss": loss
+                }
+            else:
+                table_structure[hostname]["status"].append(status)
+                table_structure[hostname]["time"] += res[1]
+                table_structure[hostname]["rtt"] += res[2]
+                table_structure[hostname]["icmp_seq"] += 1
+                table_structure[hostname]["loss"] += loss
+                table_structure[hostname]["status"] = table_structure[hostname]["status"][-STATUS_WIDTH:]
         result_queue.task_done()
 
 
@@ -96,9 +92,16 @@ def rich_table():
     console.clear()
     table = Table(title="Hostwatcher", style='bold')
     table.add_column("Host", style="bold", justify='center')
+    table.add_column("RTT AVG", style="bold", justify='center')
+    table.add_column("TIME AVG", style="bold", justify='center')
     table.add_column("Status", style="bold", justify='left')
     for key, value in table_structure.items():
-            table.add_row(str(key), "".join(value))
+        time_avg = round(float(table_structure[key]["time"])/int(table_structure[key]["icmp_seq"]), 1)
+        rtt_avg = round(float(table_structure[key]["rtt"])/int(table_structure[key]["icmp_seq"]), 1)
+        table.add_row(str(key), 
+                      str(rtt_avg), 
+                      str(time_avg), 
+                      "".join(table_structure[key]["status"]))
     console.print(table)
 
 
