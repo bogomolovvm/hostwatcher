@@ -5,6 +5,7 @@ import queue
 import platform
 import json
 import re
+import multiprocessing
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
@@ -48,7 +49,7 @@ def ping_cmd(host):
                                 stderr=subprocess.PIPE,
                                 text=True)
     time_match = re.search(r'time=(\d+\.\d+)', result.stdout)
-    rtt_match = re.search(r"ttl=(\d+) time=(\d+)ms", result.stdout)
+    rtt_match = re.search(r'(\d+\.\d+)\/', result.stdout)
     if time_match:
         time = time_match.group(1)
     else:
@@ -94,15 +95,22 @@ def rich_table():
     table.add_column("Host", style="bold", justify='center')
     table.add_column("RTT AVG", style="bold", justify='center')
     table.add_column("TIME AVG", style="bold", justify='center')
+    table.add_column("LOSS", style="bold", justify='center')
+    table.add_column("SEQ", style="bold", justify='center')
     table.add_column("Status", style="bold", justify='left')
     for key, value in table_structure.items():
         time_avg = round(float(table_structure[key]["time"])/int(table_structure[key]["icmp_seq"]), 1)
         rtt_avg = round(float(table_structure[key]["rtt"])/int(table_structure[key]["icmp_seq"]), 1)
+        loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100)/int(table_structure[key]["icmp_seq"]), 1))
+        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(loss_prcnt) < 50 else f"[red]{loss_prcnt + '%'}[/red]"
         table.add_row(str(key), 
-                      str(rtt_avg), 
-                      str(time_avg), 
+                      str(rtt_avg) + 'ms', 
+                      str(time_avg) + 'ms',
+                      loss_colored,
+                      str(table_structure[key]["icmp_seq"]),
                       "".join(table_structure[key]["status"]))
     console.print(table)
+    return table
 
 
 def parallel():
@@ -110,6 +118,7 @@ def parallel():
         results = [executor.submit(ping_cmd, host) for host in hosts]
         for result in concurrent.futures.as_completed(results):
             result.result()
+    console.log("parallel is ended")
 
 
 def main():
