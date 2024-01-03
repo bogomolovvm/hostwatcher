@@ -42,12 +42,13 @@
     "rich": {
         "console": {
             "console_color_system": "auto",
-            "console_style": "bold white"
+            "console_style": "bold green"
         },
         "table": {
             "status_column_width": 20,
             "success_char": "▅",
-            "failed_char": "▁"
+            "failed_char": "▁",
+            "loss_warning": 50
         }
     }
 }

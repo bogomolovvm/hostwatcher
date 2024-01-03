@@ -5,10 +5,11 @@ import queue
 import platform
 import json
 import re
-import multiprocessing
+import datetime
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
+from rich.pretty import pprint
 
 try:
     with open("config.json") as file:
@@ -24,6 +25,8 @@ hosts = CFG["hosts"]
 STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
 SUCCESS_CHAR = CFG["rich"]["table"]["success_char"]
 FAILED_CHAR = CFG["rich"]["table"]["failed_char"]
+LOSS_PERCENT_WARNING = CFG["rich"]["table"]["loss_warning"]
+
 console = Console(color_system=CFG["rich"]["console"]["console_color_system"], style=CFG["rich"]["console"]["console_style"])
 
 def get_operating_system():
@@ -90,7 +93,8 @@ def queue_to_dict():
 
 
 def rich_table():
-    console.clear()
+    if not table_structure:
+        return 'Collecting data. Please wait...'
     table = Table(title="Hostwatcher", style='bold')
     table.add_column("Host", style="bold", justify='center')
     table.add_column("RTT AVG", style="bold", justify='center')
@@ -102,33 +106,38 @@ def rich_table():
         time_avg = round(float(table_structure[key]["time"])/int(table_structure[key]["icmp_seq"]), 1)
         rtt_avg = round(float(table_structure[key]["rtt"])/int(table_structure[key]["icmp_seq"]), 1)
         loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100)/int(table_structure[key]["icmp_seq"]), 1))
-        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(loss_prcnt) < 50 else f"[red]{loss_prcnt + '%'}[/red]"
+        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(loss_prcnt) < LOSS_PERCENT_WARNING else f"[red]{loss_prcnt + '%'}[/red]"
         table.add_row(str(key), 
                       str(rtt_avg) + 'ms', 
                       str(time_avg) + 'ms',
                       loss_colored,
                       str(table_structure[key]["icmp_seq"]),
                       "".join(table_structure[key]["status"]))
-    console.print(table)
     return table
 
 
 def parallel():
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = [executor.submit(ping_cmd, host) for host in hosts]
-        for result in concurrent.futures.as_completed(results):
-            result.result()
-    console.log("parallel is ended")
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = [executor.submit(ping_cmd, host) for host in hosts]
+            for result in concurrent.futures.as_completed(results):
+                result.result()
 
 
 def main():
-    console.clear()
-    console.print('Collecting data. Please wait...')
-    while True:
-        parallel()
-        queue_to_dict()
-        rich_table()
+    with Live(rich_table(), refresh_per_second=10) as live:
+        while True:
+            parallel()
+            queue_to_dict()
+            live.update(rich_table())
+
 
 
 if __name__ == '__main__':
-    main()
+    console.clear()
+    date = datetime.datetime.now()
+    console.print("Started at: " + date.strftime("%Y-%m-%d %H:%M:%S") + '\n')
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.clear()
+        console.print("[red]The program has been stopped[/red]")
