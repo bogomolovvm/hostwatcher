@@ -27,7 +27,8 @@ SUCCESS_CHAR = CFG["rich"]["table"]["success_char"]
 FAILED_CHAR = CFG["rich"]["table"]["failed_char"]
 LOSS_PERCENT_WARNING = CFG["rich"]["table"]["loss_warning"]
 
-console = Console(color_system=CFG["rich"]["console"]["console_color_system"], style=CFG["rich"]["console"]["console_style"])
+console = Console(color_system=CFG["rich"]["console"]["console_color_system"],
+                  style=CFG["rich"]["console"]["console_style"])
 
 def get_operating_system():
     system = platform.system()
