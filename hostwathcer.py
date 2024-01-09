@@ -10,6 +10,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.live import Live
 from rich.pretty import pprint
+import multiprocessing
+import sys
+
 
 try:
     with open("config.json") as file:
@@ -18,8 +21,8 @@ except Exception as e:
     print(e)
 
 table_structure = {}
-result_queue = queue.Queue()
-
+multiprocess_queue = multiprocessing.Queue()
+one_thread_queue = queue.Queue()
 
 hosts = CFG["hosts"]
 STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
@@ -29,6 +32,7 @@ LOSS_PERCENT_WARNING = CFG["rich"]["table"]["loss_warning"]
 
 console = Console(color_system=CFG["rich"]["console"]["console_color_system"],
                   style=CFG["rich"]["console"]["console_style"])
+
 
 def get_operating_system():
     system = platform.system()
@@ -40,7 +44,7 @@ def get_operating_system():
         return 'Unknown'
 
 
-def ping_cmd(host):
+def ping_cmd(host, result_queue):
     system_name = get_operating_system()
     if system_name == 'Windows':
         result = subprocess.run(['ping', '-n', '1', '-w', '500', host],
@@ -65,7 +69,7 @@ def ping_cmd(host):
     result_queue.put({host: [result.returncode, float(time), float(rtt)]})
 
 
-def queue_to_dict():
+def queue_to_dict(result_queue):
     while not result_queue.empty():
         result = result_queue.get()
         for hostname, res in result.items():
@@ -90,7 +94,6 @@ def queue_to_dict():
                 table_structure[hostname]["icmp_seq"] += 1
                 table_structure[hostname]["loss"] += loss
                 table_structure[hostname]["status"] = table_structure[hostname]["status"][-STATUS_WIDTH:]
-        result_queue.task_done()
 
 
 def rich_table():
@@ -104,12 +107,13 @@ def rich_table():
     table.add_column("SEQ", style="bold", justify='center')
     table.add_column("Status", style="bold", justify='left')
     for key, value in table_structure.items():
-        time_avg = round(float(table_structure[key]["time"])/int(table_structure[key]["icmp_seq"]), 1)
-        rtt_avg = round(float(table_structure[key]["rtt"])/int(table_structure[key]["icmp_seq"]), 1)
-        loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100)/int(table_structure[key]["icmp_seq"]), 1))
-        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(loss_prcnt) < LOSS_PERCENT_WARNING else f"[red]{loss_prcnt + '%'}[/red]"
-        table.add_row(str(key), 
-                      str(rtt_avg) + 'ms', 
+        time_avg = round(float(table_structure[key]["time"]) / int(table_structure[key]["icmp_seq"]), 1)
+        rtt_avg = round(float(table_structure[key]["rtt"]) / int(table_structure[key]["icmp_seq"]), 1)
+        loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100) / int(table_structure[key]["icmp_seq"]), 1))
+        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(
+            loss_prcnt) < LOSS_PERCENT_WARNING else f"[red]{loss_prcnt + '%'}[/red]"
+        table.add_row(str(key),
+                      str(rtt_avg) + 'ms',
                       str(time_avg) + 'ms',
                       loss_colored,
                       str(table_structure[key]["icmp_seq"]),
@@ -117,20 +121,40 @@ def rich_table():
     return table
 
 
-def parallel():
+def threading_ping(result_queue):
+    while True:
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            results = [executor.submit(ping_cmd, host) for host in hosts]
+            results = [executor.submit(ping_cmd, host, result_queue) for host in hosts]
             for result in concurrent.futures.as_completed(results):
                 result.result()
 
 
-def main():
-    with Live(rich_table(), refresh_per_second=10) as live:
+def rich_live_update(result_queue):
+    with Live(rich_table(), refresh_per_second=100) as live:
         while True:
-            parallel()
-            queue_to_dict()
-            live.update(rich_table())
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future1 = executor.submit(queue_to_dict, result_queue)
+                future2 = executor.submit(live.update,rich_table())
 
+                concurrent.futures.wait([future1, future2])
+
+
+def main():
+    if '--multiprocess' in sys.argv:
+        writer_process = multiprocessing.Process(target=threading_ping, args=(multiprocess_queue,))
+        reader_process = multiprocessing.Process(target=rich_live_update, args=(multiprocess_queue,))
+
+        writer_process.start()
+        reader_process.start()
+
+        writer_process.join()
+        reader_process.join()
+    else:
+        with Live(rich_table(), refresh_per_second=100) as live:
+            while True:
+                threading_ping(one_thread_queue)
+                queue_to_dict(one_thread_queue)
+                live.update(rich_table())
 
 
 if __name__ == '__main__':
@@ -142,3 +166,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         console.clear()
         console.print("[red]The program has been stopped[/red]")
+        exit(1)
