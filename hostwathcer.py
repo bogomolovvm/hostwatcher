@@ -22,7 +22,7 @@ except Exception as e:
 
 table_structure = {}
 multiprocess_queue = multiprocessing.Queue()
-one_thread_queue = queue.Queue()
+
 
 hosts = CFG["hosts"]
 STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
@@ -122,27 +122,42 @@ def rich_table():
 
 
 def threading_ping(result_queue):
-    while True:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            results = [executor.submit(ping_cmd, host, result_queue) for host in hosts]
-            for result in concurrent.futures.as_completed(results):
-                result.result()
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = [executor.submit(ping_cmd, host, result_queue) for host in hosts]
+        for result in concurrent.futures.as_completed(results):
+            result.result()
 
-
-def rich_live_update(result_queue):
-    with Live(rich_table(), refresh_per_second=100) as live:
+def threading_ping_process(result_queue):
+    try:
         while True:
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future1 = executor.submit(queue_to_dict, result_queue)
-                future2 = executor.submit(live.update,rich_table())
+                results = [executor.submit(ping_cmd, host, result_queue) for host in hosts]
+                for result in concurrent.futures.as_completed(results):
+                    result.result()
+    except KeyboardInterrupt:
+        console.clear()
+        console.print("[red]The program has been stopped[/red]")
+        exit(1)
 
-                concurrent.futures.wait([future1, future2])
+            
+def rich_live_update_process(result_queue):
+    try:
+        with Live(rich_table(), refresh_per_second=100) as live:
+            while True:
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future1 = executor.submit(queue_to_dict, result_queue)
+                    future2 = executor.submit(live.update,rich_table())
+                    concurrent.futures.wait([future1, future2])
+    except KeyboardInterrupt:
+        console.clear()
+        console.print("[red]The program has been stopped[/red]")
+        exit(1)
 
 
 def main():
     if '--multiprocess' in sys.argv:
-        writer_process = multiprocessing.Process(target=threading_ping, args=(multiprocess_queue,))
-        reader_process = multiprocessing.Process(target=rich_live_update, args=(multiprocess_queue,))
+        writer_process = multiprocessing.Process(target=threading_ping_process, args=(multiprocess_queue,))
+        reader_process = multiprocessing.Process(target=rich_live_update_process, args=(multiprocess_queue,))
 
         writer_process.start()
         reader_process.start()
@@ -150,6 +165,7 @@ def main():
         writer_process.join()
         reader_process.join()
     else:
+        one_thread_queue = queue.Queue()
         with Live(rich_table(), refresh_per_second=100) as live:
             while True:
                 threading_ping(one_thread_queue)
@@ -161,9 +177,4 @@ if __name__ == '__main__':
     console.clear()
     date = datetime.datetime.now()
     console.print("Started at: " + date.strftime("%Y-%m-%d %H:%M:%S") + '\n')
-    try:
-        main()
-    except KeyboardInterrupt:
-        console.clear()
-        console.print("[red]The program has been stopped[/red]")
-        exit(1)
+    main()
