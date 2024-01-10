@@ -45,7 +45,7 @@
             "console_style": "bold green"
         },
         "table": {
-            "status_column_width": 20,
+            "status_column_width": 100,
             "success_char": "▅",
             "failed_char": "▁",
             "loss_warning": 50
