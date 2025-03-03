@@ -12,6 +12,7 @@ import sys
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
+from collections import OrderedDict
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,12 +22,11 @@ try:
         CFG = json.load(file)
     with open("hosts.txt") as file:
         hosts = file.read().splitlines()
-        hosts = sorted(hosts)
 except Exception as e:
     logging.error(f"Error loading config or hosts: {e}")
     sys.exit()
 
-table_structure = {}
+table_structure = OrderedDict((host, {}) for host in hosts)
 multiprocess_queue = multiprocessing.Queue()
 
 STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
@@ -74,7 +74,7 @@ def queue_to_dict(result_queue):
             for hostname, res in result.items():
                 status = f"[green]{SUCCESS_CHAR}[/green]" if res[0] == 0 else f"[red]{FAILED_CHAR}[/red]"
                 loss = 0 if res[0] == 0 else 1
-                if hostname not in table_structure:
+                if len(table_structure[hostname].values()) == 0:
                     table_structure[hostname] = {
                         "status": [status],
                         "time": res[1],
@@ -104,6 +104,8 @@ def rich_table():
     table.add_column("SEQ", style="bold", justify='center')
     table.add_column("Status", style="bold", justify='left')
     for key, value in table_structure.items():
+        if len(table_structure[key].values()) == 0:
+            continue
         time_avg = round(float(table_structure[key]["time"]) / int(table_structure[key]["icmp_seq"]), 1)
         rtt_avg = round(float(table_structure[key]["rtt"]) / int(table_structure[key]["icmp_seq"]), 1)
         loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100) / int(table_structure[key]["icmp_seq"]), 1))
@@ -137,7 +139,7 @@ def threading_ping_process(result_queue):
 
 def rich_live_update_process(result_queue):
     try:
-        with Live(rich_table(), refresh_per_second=4) as live:  # Уменьшаем частоту обновления
+        with Live(rich_table(), refresh_per_second=4) as live:
             while True:
                 queue_to_dict(result_queue)
                 live.update(rich_table())
