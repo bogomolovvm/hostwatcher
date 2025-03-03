@@ -109,8 +109,12 @@ def rich_table():
         time_avg = round(float(table_structure[key]["time"]) / int(table_structure[key]["icmp_seq"]), 1)
         rtt_avg = round(float(table_structure[key]["rtt"]) / int(table_structure[key]["icmp_seq"]), 1)
         loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100) / int(table_structure[key]["icmp_seq"]), 1))
-        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(
-            loss_prcnt) < LOSS_PERCENT_WARNING else f"[red]{loss_prcnt + '%'}[/red]"
+        if float(loss_prcnt) >= LOSS_PERCENT_WARNING:
+            loss_colored = f"[red]{loss_prcnt + '%'}[/red]"
+        elif 0 < float(loss_prcnt) < LOSS_PERCENT_WARNING:
+            loss_colored = f"[orange1]{loss_prcnt + '%'}[orange1]"
+        else:
+            loss_colored = f"[green]{loss_prcnt + '%'}[/green]"
         table.add_row(str(key),
                       str(rtt_avg) + 'ms',
                       str(time_avg) + 'ms',
