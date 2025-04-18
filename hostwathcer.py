@@ -1,30 +1,34 @@
 import concurrent.futures
-import subprocess
-import time
-import queue
-import platform
-import json
-import re
 import datetime
-from rich.console import Console
-from rich.table import Table
-from rich.live import Live
-from rich.pretty import pprint
+import json
+import logging
 import multiprocessing
+import platform
+import queue
+import re
+import subprocess
 import sys
 
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from collections import OrderedDict
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 try:
     with open("config.json") as file:
         CFG = json.load(file)
+    with open("hosts.txt") as file:
+        hosts = file.read().splitlines()
 except Exception as e:
-    print(e)
+    logging.error(f"Error loading config or hosts: {e}")
+    sys.exit()
 
-table_structure = {}
+table_structure = OrderedDict((host, {}) for host in hosts)
 multiprocess_queue = multiprocessing.Queue()
 
-
-hosts = CFG["hosts"]
 STATUS_WIDTH = CFG["rich"]["table"]["status_column_width"]
 SUCCESS_CHAR = CFG["rich"]["table"]["success_char"]
 FAILED_CHAR = CFG["rich"]["table"]["failed_char"]
@@ -47,7 +51,7 @@ def get_operating_system():
 def ping_cmd(host, result_queue):
     system_name = get_operating_system()
     if system_name == 'Windows':
-        result = subprocess.run(['ping', '-n', '1', '-w', '500', host],
+        result = subprocess.run(['ping', '-n', '1', '-w', '00', host],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 text=True)
@@ -58,42 +62,35 @@ def ping_cmd(host, result_queue):
                                 text=True)
     time_match = re.search(r'time=(\d+\.\d+)', result.stdout)
     rtt_match = re.search(r'(\d+\.\d+)\/', result.stdout)
-    if time_match:
-        time = time_match.group(1)
-    else:
-        time = 0
-    if rtt_match:
-        rtt = rtt_match.group(1)
-    else:
-        rtt = 0
-    result_queue.put({host: [result.returncode, float(time), float(rtt)]})
+    time = float(time_match.group(1)) if time_match else 0
+    rtt = float(rtt_match.group(1)) if rtt_match else 0
+    result_queue.put({host: [result.returncode, time, rtt]})
 
 
 def queue_to_dict(result_queue):
     while not result_queue.empty():
-        result = result_queue.get()
-        for hostname, res in result.items():
-            if res[0] == 0:
-                status = f"[green]{SUCCESS_CHAR}[/green]"
-                loss = 0
-            else:
-                status = f"[red]{FAILED_CHAR}[/red]"
-                loss = 1
-            if hostname not in table_structure:
-                table_structure[hostname] = {
-                    "status": [status],
-                    "time": res[1],
-                    "rtt": res[2],
-                    "icmp_seq": 1,
-                    "loss": loss
-                }
-            else:
-                table_structure[hostname]["status"].append(status)
-                table_structure[hostname]["time"] += res[1]
-                table_structure[hostname]["rtt"] += res[2]
-                table_structure[hostname]["icmp_seq"] += 1
-                table_structure[hostname]["loss"] += loss
-                table_structure[hostname]["status"] = table_structure[hostname]["status"][-STATUS_WIDTH:]
+        try:
+            result = result_queue.get()
+            for hostname, res in result.items():
+                status = f"[green]{SUCCESS_CHAR}[/green]" if res[0] == 0 else f"[red]{FAILED_CHAR}[/red]"
+                loss = 0 if res[0] == 0 else 1
+                if len(table_structure[hostname].values()) == 0:
+                    table_structure[hostname] = {
+                        "status": [status],
+                        "time": res[1],
+                        "rtt": res[2],
+                        "icmp_seq": 1,
+                        "loss": loss
+                    }
+                else:
+                    table_structure[hostname]["status"].append(status)
+                    table_structure[hostname]["time"] += res[1]
+                    table_structure[hostname]["rtt"] += res[2]
+                    table_structure[hostname]["icmp_seq"] += 1
+                    table_structure[hostname]["loss"] += loss
+                    table_structure[hostname]["status"] = table_structure[hostname]["status"][-STATUS_WIDTH:]
+        except Exception as e:
+            logging.error(f"Error processing queue: {e}")
 
 
 def rich_table():
@@ -107,11 +104,17 @@ def rich_table():
     table.add_column("SEQ", style="bold", justify='center')
     table.add_column("Status", style="bold", justify='left')
     for key, value in table_structure.items():
+        if len(table_structure[key].values()) == 0:
+            continue
         time_avg = round(float(table_structure[key]["time"]) / int(table_structure[key]["icmp_seq"]), 1)
         rtt_avg = round(float(table_structure[key]["rtt"]) / int(table_structure[key]["icmp_seq"]), 1)
         loss_prcnt = str(round((int(table_structure[key]["loss"]) * 100) / int(table_structure[key]["icmp_seq"]), 1))
-        loss_colored = f"[green]{loss_prcnt + '%'}[/green]" if float(
-            loss_prcnt) < LOSS_PERCENT_WARNING else f"[red]{loss_prcnt + '%'}[/red]"
+        if float(loss_prcnt) >= LOSS_PERCENT_WARNING:
+            loss_colored = f"[red]{loss_prcnt + '%'}[/red]"
+        elif 0 < float(loss_prcnt) < LOSS_PERCENT_WARNING:
+            loss_colored = f"[orange1]{loss_prcnt + '%'}[orange1]"
+        else:
+            loss_colored = f"[green]{loss_prcnt + '%'}[/green]"
         table.add_row(str(key),
                       str(rtt_avg) + 'ms',
                       str(time_avg) + 'ms',
@@ -127,31 +130,27 @@ def threading_ping(result_queue):
         for result in concurrent.futures.as_completed(results):
             result.result()
 
+
 def threading_ping_process(result_queue):
     try:
         while True:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                results = [executor.submit(ping_cmd, host, result_queue) for host in hosts]
-                for result in concurrent.futures.as_completed(results):
-                    result.result()
+            threading_ping(result_queue)
     except KeyboardInterrupt:
         console.clear()
-        console.print("[red]The program has been stopped[/red]")
-        exit(1)
+        logging.info("Ping process stopped by user")
+        sys.exit(0)
 
-            
+
 def rich_live_update_process(result_queue):
     try:
-        with Live(rich_table(), refresh_per_second=100) as live:
+        with Live(rich_table(), refresh_per_second=4) as live:
             while True:
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future1 = executor.submit(queue_to_dict, result_queue)
-                    future2 = executor.submit(live.update,rich_table())
-                    concurrent.futures.wait([future1, future2])
+                queue_to_dict(result_queue)
+                live.update(rich_table())
     except KeyboardInterrupt:
         console.clear()
-        console.print("[red]The program has been stopped[/red]")
-        exit(1)
+        logging.info("Live update process stopped by user")
+        sys.exit(0)
 
 
 def main():
@@ -162,11 +161,19 @@ def main():
         writer_process.start()
         reader_process.start()
 
-        writer_process.join()
-        reader_process.join()
+        try:
+            writer_process.join()
+            reader_process.join()
+        except KeyboardInterrupt:
+            console.clear()
+            logging.info("Main process stopped by user")
+            writer_process.terminate()
+            reader_process.terminate()
+            writer_process.join()
+            reader_process.join()
     else:
         one_thread_queue = queue.Queue()
-        with Live(rich_table(), refresh_per_second=100) as live:
+        with Live(rich_table()) as live:
             while True:
                 threading_ping(one_thread_queue)
                 queue_to_dict(one_thread_queue)
